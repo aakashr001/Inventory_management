@@ -1,0 +1,6 @@
+code,description,category
+ADJ-COUNT,Physical count difference,Adjustment
+ADJ-FOUND,Stock found,Adjustment
+DMG-TRANS,Damaged in transit,Discrepancy
+SHORT,Shortage / missing in transit,Discrepancy
+REV-ERR,Posting error,Reversal
