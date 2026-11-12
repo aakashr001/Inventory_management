@@ -432,7 +432,174 @@ module.exports = cds.service.impl(async function() {
 // second port of brd execution process
 // stock movement
 
+// transfer request validation
+
+this.before("CREATE", "TransferRequests", async (req) => {
+      const data = req.data;
+
+      if (!data.fromPlant_code || !data.toPlant_code) {
+        fail(
+          req,
+          400,
+          "Source plant and destination plant are required."
+        );
+      }
+
+      if (!data.fromLocation_ID || !data.toLocation_ID) {
+        fail(
+          req,
+          400,
+          "Source and destination storage locations are required."
+        );
+      }
+
+      if (
+        data.fromPlant_code === data.toPlant_code &&
+        data.fromLocation_ID === data.toLocation_ID
+      ) {
+        fail(
+          req,
+          400,
+          "Source and destination locations must be different."
+        );
+      }
+
+      assertPlantAccess(req, data.fromPlant_code);
+
+      if (!Array.isArray(data.items) || data.items.length === 0) {
+        fail(
+          req,
+          400,
+          "At least one transfer item is required."
+        );
+      }
+
+      for (const item of data.items) {
+        requirePositive(
+          req,
+          item.requestedQty,
+          "Requested quantity"
+        );
+
+        if (!item.material_ID) {
+          fail(
+            req,
+            400,
+            "Material is required for every transfer item."
+          );
+        }
+      }
+
+      if (!data.number) {
+        data.number = `TR-${Date.now()}`;
+      }
+
+      data.status = "Requested";
+    });
 
 
+// cancel trannsfer and release reservations
+    this.on("cancelTransfer", "TransferRequests", async (req) => {
+      const transferID = req.params?.[0]?.ID;
 
+      const tx = cds.tx(req);
+
+      const transfer = await getTransfer(
+        tx,
+        transferID,
+        req
+      );
+
+      assertPlantAccess(req, transfer.fromPlant_code);
+
+      if (
+        ["Completed", "Cancelled"].includes(transfer.status)
+      ) {
+        fail(
+          req,
+          400,
+          "Completed or cancelled transfers cannot be cancelled."
+        );
+      }
+
+      const items = await getTransferItems(tx, transferID);
+
+      for (const item of items) {
+        const reservations = await getReservationForItem(
+          tx,
+          item.ID
+        );
+
+        for (const reservation of reservations) {
+          const remaining =
+            number(reservation.quantity) -
+            number(reservation.consumedQty) -
+            number(reservation.releasedQty);
+
+          if (remaining <= 0) continue;
+
+          const stock = await getStock(
+            tx,
+            {
+              material_ID: reservation.material_ID,
+              plant_code: reservation.plant_code,
+              location_ID: reservation.location_ID,
+              batch: cleanBatch(reservation.batch)
+            },
+            req
+          );
+
+          await updateStock(
+            tx,
+            stock,
+            {
+              reserved: Math.max(
+                0,
+                number(stock.reserved) - remaining
+              )
+            },
+            req
+          );
+
+          await tx.run(
+            UPDATE(Reservations)
+              .set({
+                releasedQty:
+                  number(reservation.releasedQty) + remaining,
+                status: "Released"
+              })
+              .where({ ID: reservation.ID })
+          );
+        }
+
+        const remainingToDispatch =
+          number(item.requestedQty) -
+          number(item.dispatchedQty) -
+          number(item.cancelledQty);
+
+        if (remainingToDispatch > 0) {
+          await tx.run(
+            UPDATE(TransferItems)
+              .set({
+                cancelledQty:
+                  number(item.cancelledQty) +
+                  remainingToDispatch
+              })
+              .where({ ID: item.ID })
+          );
+        }
+      }
+
+      await setTransferStatus(
+        tx,
+        transferID,
+        "Cancelled"
+      );
+
+      return tx.run(
+        SELECT.one.from(TransferRequests).where({
+          ID: transferID
+        })
+      );
+    });
 })
