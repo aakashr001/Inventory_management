@@ -434,6 +434,50 @@ module.exports = cds.service.impl(async function() {
 
 // transfer request validation
 
+
+ const assertPlantAccess = (req, plantCode) => {
+      const assignedPlants = req.user?.attr?.plants;
+
+      if (
+        Array.isArray(assignedPlants) &&
+        assignedPlants.length > 0 &&
+        !assignedPlants.includes(plantCode)
+      ) {
+        fail(
+          req,
+          403,
+          "You are not authorized to access this plant."
+        );
+      }
+    };
+     const getTransferItems = async (tx, transferID) =>
+      tx.run(
+        SELECT.from(TransferItems).where({
+          transfer_ID: transferID
+        })
+      );
+    // const getReservationForItem = async (tx, itemID) =>
+    //   tx.run(
+    //     SELECT.from(Reservations).where({
+    //       transferItem_ID: itemID,
+    //       status: "Active"
+    //     })
+    //   );
+
+ const getTransfer = async (tx, transferID, req) => {
+    const transfer = await tx.run(
+        SELECT.one.from(TransferRequests)
+          .where({ ID: transferID })
+          .forUpdate()
+      );
+
+      if (!transfer) {
+        fail(req, 404, "Transfer request was not found.");
+      }
+
+      return transfer;
+    };
+
 this.before("CREATE", "TransferRequests", async (req) => {
       const data = req.data;
 
@@ -498,7 +542,115 @@ this.before("CREATE", "TransferRequests", async (req) => {
     });
 
 
-// cancel trannsfer and release reservations
+
+
+
+// APPROVE TRANSFER AND RESERVE STOCK
+
+    this.on("approveTransfer", "TransferRequests", async (req) => {
+      const transferID = req.params?.[0]?.ID;
+
+      const tx = cds.tx(req);
+
+      const transfer = await getTransfer(
+        tx,
+        transferID,
+        req
+      );
+
+      assertPlantAccess(req, transfer.fromPlant_code);
+
+      if (transfer.status !== "Requested") {
+        fail(
+          req,
+          400,
+          "Only requested transfers can be approved."
+        );
+      }
+
+      const items = await getTransferItems(tx, transferID);
+
+      if (!items.length) {
+        fail(req, 400, "Transfer has no items.");
+      }
+
+      for (const item of items) {
+        requirePositive(
+          req,
+          item.requestedQty,
+          "Requested quantity"
+        );
+
+        const key = {
+          material_ID: item.material_ID,
+          plant_code: transfer.fromPlant_code,
+          location_ID: transfer.fromLocation_ID,
+          batch: cleanBatch(item.batch)
+        };
+
+        const stock = await getStock(tx, key, req);
+
+        const available =
+          number(stock.unrestricted) -
+          number(stock.reserved);
+
+        if (number(item.requestedQty) > available) {
+          fail(
+            req,
+            400,
+            `Insufficient stock for material ${item.material_ID}. Available: ${available}.`
+          );
+        }
+
+        const reservationID = cds.utils.uuid();
+
+        await tx.run(
+          INSERT.into(Reservations).entries({
+            ID: reservationID,
+            material_ID: item.material_ID,
+            plant_code: transfer.fromPlant_code,
+            location_ID: transfer.fromLocation_ID,
+            batch: cleanBatch(item.batch),
+            quantity: item.requestedQty,
+            consumedQty: 0,
+            releasedQty: 0,
+            status: "Active",
+            transferItem_ID: item.ID,
+            note: `Transfer ${transfer.number}`,
+            idempotencykey: `RES-${transferID}-${item.ID}`
+          })
+        );
+
+        await updateStock(
+          tx,
+          stock,
+          {
+            reserved:
+              number(stock.reserved) +
+              number(item.requestedQty)
+          },
+          req
+        );
+      }
+
+      await tx.run(
+        UPDATE(TransferRequests)
+          .set({
+            status: "Approved",
+            approvedBy: currentUser(req),
+            approvedAt: new Date().toISOString()
+          })
+          .where({ ID: transferID })
+      );
+
+      return tx.run(
+        SELECT.one.from(TransferRequests).where({
+          ID: transferID
+        })
+      );
+    });
+// CANCEL TRANSFER AND RELEASE RESERVATIONS
+
     this.on("cancelTransfer", "TransferRequests", async (req) => {
       const transferID = req.params?.[0]?.ID;
 
@@ -600,6 +752,6 @@ this.before("CREATE", "TransferRequests", async (req) => {
         SELECT.one.from(TransferRequests).where({
           ID: transferID
         })
-      );
-    });
-})
+    );
+   
+}) })
