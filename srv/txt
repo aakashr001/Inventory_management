@@ -1,0 +1,40 @@
+// type DispatchLine {
+//   item           : UUID;      
+//   quantity       : db.Qty;    
+//   closeRemaining : Boolean;  
+// }
+
+// type ReceiptLine {
+//   item          : UUID;       
+//   receivedQty   : db.Qty;     
+//   damagedQty    : db.Qty;     
+//   closeShortage : Boolean;    
+//   reasonCode    : String(10); 
+// }
+
+
+requestedQty: Quantity requested for transfer.
+
+
+
+dispatchedQty: Quantity sent from the source plant.
+
+
+
+receivedQty: Quantity received at the destination plant.
+
+
+
+damagedQty: Quantity received in damaged condition.
+
+
+
+shortageQty: Difference between dispatched and received quantities.
+
+
+
+cancelledQty: Quantity cancelled from the transfer.
+
+
+
+Plant check. Add checkPlant(req, fromPlant) if you want managers to create transfers only from their own plant. It needs mock users with attr.plant, so I left it out.

@@ -1,0 +1,11 @@
+ID;plant_code;name
+1000-RM01;1000;Raw Material Store Chennai
+1000-FG01;1000;Finished Goods Store Chennai
+1000-SP01;1000;Spare Parts Store Chennai
+1000-QA01;1000;Quality Inspection Chennai
+1000-BL01;1000;Blocked Stock Chennai
+2000-RM01;2000;Raw Material Store Bangalore
+2000-FG01;2000;Finished Goods Store Bangalore
+2000-SP01;2000;Spare Parts Store Bangalore
+2000-QA01;2000;Quality Inspection Bangalore
+2000-BL01;2000;Blocked Stock Bangalore

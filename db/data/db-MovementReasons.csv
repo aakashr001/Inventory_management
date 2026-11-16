@@ -1,0 +1,11 @@
+code;description;category
+ADJ001;Physical Stock Correction;Adjustment
+ADJ002;System Stock Correction;Adjustment
+DIS001;Stock Damage;Discrepancy
+DIS002;Stock Shortage;Discrepancy
+DIS003;Stock Excess;Discrepancy
+REV001;Incorrect Receipt Reversal;Reversal
+REV002;Incorrect Issue Reversal;Reversal
+REV003;Transfer Reversal;Reversal
+ADJ003;Opening Stock Adjustment;Adjustment
+DIS004;Missing Stock;Discrepancy

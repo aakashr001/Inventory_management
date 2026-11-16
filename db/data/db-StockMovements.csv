@@ -1,0 +1,1 @@
+ID,reference,movementType,material_ID,plant_code,location_ID,batch,stockType,quantity,unit_Code,reason_code,reasonText,transfer_ID,transferItem_ID,reversalOf_ID,idempotencykey,postedBy,postedAt

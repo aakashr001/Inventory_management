@@ -1,0 +1,11 @@
+ID;description;batchManaged;baseUnit_Code
+MAT-1001;Engine Filter;true;EA
+MAT-1002;Hydraulic Oil;true;L
+MAT-1003;Air Filter;false;EA
+MAT-1004;Engine Oil;true;L
+MAT-1005;Brake Assembly;false;EA
+MAT-1006;Steel Rod;false;M
+MAT-1007;Bearing;true;EA
+MAT-1008;Coolant;true;L
+MAT-1009;Rubber Hose;false;M
+MAT-1010;Fuel Filter;true;EA

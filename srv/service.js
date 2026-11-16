@@ -1,7 +1,12 @@
 
+
+
+
 const cds = require("@sap/cds");
+const { results } = require("@sap/cds/lib/utils/cds-utils");
 
 const { SELECT, INSERT, UPDATE } = cds.ql;
+
 
 module.exports = cds.service.impl(async function() {
 
@@ -11,7 +16,9 @@ module.exports = cds.service.impl(async function() {
         Reservations,
         TransferRequests,
         TransferItems,
-        Alerts,ReorderLevels
+        Alerts,ReorderLevels,
+        StorageLocations,
+        Materials
     } = this.entities
 
     
@@ -23,7 +30,9 @@ module.exports = cds.service.impl(async function() {
 
    const number = (value) => Number(value || 0);
 
-    
+        const currentUser = (req) => {
+        return req.user?.id || "SYSTEM";
+    };
    
     // Validate positive quantity
 
@@ -120,8 +129,94 @@ module.exports = cds.service.impl(async function() {
 
     };
 
+//  create transfer request life cycle 1 the business process
 
-    // STOCK RESERVATION
+this.on("createTransfer",async(req)=>{
+     
+  const {fromPlant,fromLocation,toPlant,toLocation,remarks,items}=req.data
+  const tx=cds.tx(req)
+
+  if(!fromPlant || !fromLocation || !toPlant ||!toLocation){
+    fail(req,400,"From and to plant /location are required")
+  }
+  
+
+  if(fromPlant===toPlant&& fromLocation===toLocation){
+    fail(req,400,"Source and destination must be different")
+  }
+
+  if(!items?.length) fail(req,400,"A transfer needs at least one item")
+
+// locations should match their respective plants
+
+const from=await tx.run(SELECT.one.from(StorageLocations).where({ID:fromLocation }))
+const to =await tx.run(SELECT.one.from(StorageLocations).where({ ID:toLocation }))
+
+if(!from || from.plant_code !==fromPlant) fail(req,400,"Source location is not in the source plant")
+if(!to || to.plant_code !==toPlant) fail(req,400,"Destination location is not in the destination plant")
+
+  // to inject the items also 
+
+  const transferID=cds.utils.uuid()
+  const itemRows=[]
+  for(const item of items){
+    requirePositive(req,item.requestedQty,"Requested Quantity");
+    const material= await tx.run(SELECT.one.from(Materials).where({
+      ID:item.material
+    }))
+
+    if(!material) fail(req,400,`Unknown material ${item.material}.`)
+
+      itemRows.push({
+          ID:cds.utils.uuid(),
+          material_ID:item.material,
+          batch:item.batch,
+          unit_Code:item.unit ||material.baseUnit_Code,
+          requestedQty:number(item.requestedQty)
+          // 
+      })
+  }
+
+//  now we are going to create ransaction number 
+
+const last =await tx.run(SELECT.one.from(TransferRequests).columns('number').orderBy('number desc'))
+
+const next =last ? parseInt(last.number.slice(3))+1 : 1001 
+
+
+// save header +items together 
+
+await tx.run(INSERT.into(TransferRequests).entries({
+  ID:transferID,
+  number:`TR-${next}`,
+  fromPlant_code:fromLocation,
+  fromLocation_ID:fromLocation,
+  toPlant_code:toPlant,
+  toLocation_ID:toLocation,
+  status:'Requested',
+  remarks:remarks || '',
+  items:itemRows
+}))
+
+// final output 
+
+const result =await tx.run(SELECT.one.from(TransferRequests).where({ID:transferID}));
+results.items=await tx.run(SELECT.from(TransferItems).where({transfer_ID:transferID}))
+ return result ;
+
+})
+
+
+
+
+
+
+
+
+
+
+
+    // stock reservation
    
 
     this.on("reserve", "StockBalances", async (req) => {
@@ -435,34 +530,20 @@ module.exports = cds.service.impl(async function() {
 // transfer request validation
 
 
- const assertPlantAccess = (req, plantCode) => {
-      const assignedPlants = req.user?.attr?.plants;
-
-      if (
-        Array.isArray(assignedPlants) &&
-        assignedPlants.length > 0 &&
-        !assignedPlants.includes(plantCode)
-      ) {
-        fail(
-          req,
-          403,
-          "You are not authorized to access this plant."
-        );
-      }
-    };
+ 
      const getTransferItems = async (tx, transferID) =>
       tx.run(
         SELECT.from(TransferItems).where({
           transfer_ID: transferID
         })
       );
-    // const getReservationForItem = async (tx, itemID) =>
-    //   tx.run(
-    //     SELECT.from(Reservations).where({
-    //       transferItem_ID: itemID,
-    //       status: "Active"
-    //     })
-    //   );
+    const getReservationForItem = async (tx, itemID) =>
+      tx.run(
+        SELECT.from(Reservations).where({
+          transferItem_ID: itemID,
+          status: "Active"
+        })
+      );
 
  const getTransfer = async (tx, transferID, req) => {
     const transfer = await tx.run(
@@ -478,75 +559,12 @@ module.exports = cds.service.impl(async function() {
       return transfer;
     };
 
-this.before("CREATE", "TransferRequests", async (req) => {
-      const data = req.data;
-
-      if (!data.fromPlant_code || !data.toPlant_code) {
-        fail(
-          req,
-          400,
-          "Source plant and destination plant are required."
-        );
-      }
-
-      if (!data.fromLocation_ID || !data.toLocation_ID) {
-        fail(
-          req,
-          400,
-          "Source and destination storage locations are required."
-        );
-      }
-
-      if (
-        data.fromPlant_code === data.toPlant_code &&
-        data.fromLocation_ID === data.toLocation_ID
-      ) {
-        fail(
-          req,
-          400,
-          "Source and destination locations must be different."
-        );
-      }
-
-      assertPlantAccess(req, data.fromPlant_code);
-
-      if (!Array.isArray(data.items) || data.items.length === 0) {
-        fail(
-          req,
-          400,
-          "At least one transfer item is required."
-        );
-      }
-
-      for (const item of data.items) {
-        requirePositive(
-          req,
-          item.requestedQty,
-          "Requested quantity"
-        );
-
-        if (!item.material_ID) {
-          fail(
-            req,
-            400,
-            "Material is required for every transfer item."
-          );
-        }
-      }
-
-      if (!data.number) {
-        data.number = `TR-${Date.now()}`;
-      }
-
-      data.status = "Requested";
-    });
+//
 
 
 
 
-
-// APPROVE TRANSFER AND RESERVE STOCK
-
+// approve transfer and reserve stock
     this.on("approveTransfer", "TransferRequests", async (req) => {
       const transferID = req.params?.[0]?.ID;
 
@@ -558,7 +576,7 @@ this.before("CREATE", "TransferRequests", async (req) => {
         req
       );
 
-      assertPlantAccess(req, transfer.fromPlant_code);
+    
 
       if (transfer.status !== "Requested") {
         fail(
@@ -585,7 +603,7 @@ this.before("CREATE", "TransferRequests", async (req) => {
           material_ID: item.material_ID,
           plant_code: transfer.fromPlant_code,
           location_ID: transfer.fromLocation_ID,
-          batch: cleanBatch(item.batch)
+          batch: item.batch
         };
 
         const stock = await getStock(tx, key, req);
@@ -610,7 +628,7 @@ this.before("CREATE", "TransferRequests", async (req) => {
             material_ID: item.material_ID,
             plant_code: transfer.fromPlant_code,
             location_ID: transfer.fromLocation_ID,
-            batch: cleanBatch(item.batch),
+            batch: item.batch,
             quantity: item.requestedQty,
             consumedQty: 0,
             releasedQty: 0,
@@ -649,7 +667,9 @@ this.before("CREATE", "TransferRequests", async (req) => {
         })
       );
     });
-// CANCEL TRANSFER AND RELEASE RESERVATIONS
+
+
+// cancel transfer and relaes resrvations
 
     this.on("cancelTransfer", "TransferRequests", async (req) => {
       const transferID = req.params?.[0]?.ID;
@@ -662,7 +682,7 @@ this.before("CREATE", "TransferRequests", async (req) => {
         req
       );
 
-      assertPlantAccess(req, transfer.fromPlant_code);
+    
 
       if (
         ["Completed", "Cancelled"].includes(transfer.status)
@@ -696,7 +716,7 @@ this.before("CREATE", "TransferRequests", async (req) => {
               material_ID: reservation.material_ID,
               plant_code: reservation.plant_code,
               location_ID: reservation.location_ID,
-              batch: cleanBatch(reservation.batch)
+              batch: reservation.batch
             },
             req
           );
@@ -742,6 +762,15 @@ this.before("CREATE", "TransferRequests", async (req) => {
         }
       }
 
+       const setTransferStatus = async (tx, transferID, status) => {
+      await tx.run(
+        UPDATE(TransferRequests)
+          .set({ status })
+          .where({ ID: transferID })
+      );
+    };
+
+
       await setTransferStatus(
         tx,
         transferID,
@@ -754,4 +783,6 @@ this.before("CREATE", "TransferRequests", async (req) => {
         })
     );
    
-}) })
+}) 
+
+})

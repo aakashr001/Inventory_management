@@ -1,0 +1,11 @@
+location_ID;code;description
+1000-RM01;BIN001;Engine Components
+1000-RM01;BIN002;Oil Storage
+1000-FG01;BIN003;Finished Goods A
+1000-SP01;BIN004;Spare Parts A
+1000-QA01;BIN005;Quality Inspection Area
+2000-RM01;BIN006;Engine Components
+2000-RM01;BIN007;Oil Storage
+2000-FG01;BIN008;Finished Goods B
+2000-SP01;BIN009;Spare Parts B
+2000-QA01;BIN010;Quality Inspection Area

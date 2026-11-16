@@ -1,5 +1,0 @@
-ID,type,severity,plant_code,material_ID,transfer_ID,message,acknowledged,createdAt,createdBy
-f0000001-0000-4000-8000-000000000001,TRANSFER_DISCREPANCY,WARNING,2000,MAT-1001,c0000001-0000-4000-8000-000000000001,Transfer TR-0001: 2 damaged and 0 missing for material MAT-1001 (DMG-TRANS),true,2026-11-05T11:00:00Z,operator2000
-f0000001-0000-4000-8000-000000000002,LOW_STOCK,WARNING,2000,MAT-1002,,Low stock: material MAT-1002 in plant 2000 has 8 available and re-order level is 15,false,2026-11-11T06:00:00Z,scheduler
-f0000001-0000-4000-8000-000000000003,LOW_STOCK,WARNING,2000,MAT-1004,,Low stock: material MAT-1004 in plant 2000 has 20 available and re-order level is 30,false,2026-11-11T06:00:00Z,scheduler
-f0000001-0000-4000-8000-000000000004,LOW_STOCK,WARNING,1000,MAT-1003,,Low stock: material MAT-1003 in plant 1000 has 35 available and re-order level is 50,false,2026-11-11T06:00:00Z,scheduler
