@@ -38,3 +38,19 @@ cancelledQty: Quantity cancelled from the transfer.
 
 
 Plant check. Add checkPlant(req, fromPlant) if you want managers to create transfers only from their own plant. It needs mock users with attr.plant, so I left it out.
+
+
+
+Receipt: Stock increases. Reversal decreases stock.
+
+
+
+Issue: Stock decreases. Reversal increases stock.
+
+
+
+Transfer In: Stock increases at the receiving location. Reversal decreases it.
+
+
+
+Transfer Out: Stock decreases at the sending location. Reversal increases it.

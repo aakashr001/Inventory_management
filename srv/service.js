@@ -27,13 +27,111 @@ module.exports = cds.service.impl(async function() {
     
  const fail = (req, status, message) =>
         req.reject(status, message);
-
+    const setTransferStatus = async (tx, transferID, status) => {
+      await tx.run(
+        UPDATE(TransferRequests)
+          .set({ status })
+          .where({ ID: transferID })
+      );
+    };
    const number = (value) => Number(value || 0);
 
         const currentUser = (req) => {
         return req.user?.id || "SYSTEM";
     };
+   const insertMovement = async (tx, req, data) => {
+      if (!data.idempotencykey) {
+        fail(req, 400, "An idempotency key is required.");
+      }
+
+      const existing = await tx.run(
+        SELECT.one.from(StockMovements).where({
+          idempotencykey: data.idempotencykey
+        })
+      );
+ 
+
+      if (existing) return existing;
+
+      const movement = {
+        reference: data.reference || `MOV-${Date.now()}`,
+        movementType: data.movementType,
+        material_ID: data.material,
+        plant_code: data.plant,
+        location_ID: data.location,
+        batch: data.batch,
+        stockType: data.stockType || "Unrestricted",
+        quantity: data.quantity,
+        unit_Code: data.unit,
+        reason_code: data.reason || null,
+        reasonText: data.reasonText || null,
+        transfer_ID: data.transfer || null,
+        transferItem_ID: data.transferItem || null,
+        reversalOf_ID: data.reversalOf || null,
+        idempotencykey: data.idempotencykey,
+        postedBy: currentUser(req),
+        postedAt: new Date().toISOString()
+      };
+
+      await tx.run(
+        INSERT.into(StockMovements).entries(movement)
+      );
+
+      return movement;
+    };
+
    
+
+   const updateTransferStatusFromItems = async (
+      tx,
+      transferID
+    ) => {
+      const items = await getTransferItems(tx, transferID);
+
+      if (!items.length) return;
+
+      const allDispatched = items.every(
+        (i) =>
+          number(i.dispatchedQty) + number(i.cancelledQty) >=
+          number(i.requestedQty)
+      );
+
+      const allReceived = items.every(
+        (i) =>
+          number(i.receivedQty) +
+            number(i.damagedQty) +
+            number(i.shortageQty) >=
+          number(i.dispatchedQty)
+      );
+
+      const anyDispatched = items.some(
+        (i) => number(i.dispatchedQty) > 0
+      );
+
+      const anyReceived = items.some(
+        (i) =>
+          number(i.receivedQty) +
+            number(i.damagedQty) +
+            number(i.shortageQty) >
+          0
+      );
+
+      if (allDispatched && allReceived) {
+        await setTransferStatus(tx, transferID, "Completed");
+      } else if (anyReceived) {
+        await setTransferStatus(
+          tx,
+          transferID,
+          "Partially_Received"
+        );
+      } else if (anyDispatched) {
+        await setTransferStatus(
+          tx,
+          transferID,
+          "In_Transit"
+        );
+      }
+    };
     // Validate positive quantity
 
     const requirePositive = (req, value, fieldName) => {
@@ -51,7 +149,24 @@ module.exports = cds.service.impl(async function() {
     };
 
 
+const assertPlantAccess = (req, plantCode) => {
+    const assignedPlants = req.user?.attr?.plants;
 
+    if (
+        !Array.isArray(assignedPlants) ||
+        assignedPlants.length === 0
+    ) {
+        fail(req, 403, "No plants are assigned to this user.");
+    }
+
+    if (!assignedPlants.includes(plantCode)) {
+        fail(
+            req,
+            403,
+            "You are not authorized to access this plant."
+        );
+    }
+};
     
 
     // Get stock balance
@@ -189,7 +304,7 @@ const next =last ? parseInt(last.number.slice(3))+1 : 1001
 await tx.run(INSERT.into(TransferRequests).entries({
   ID:transferID,
   number:`TR-${next}`,
-  fromPlant_code:fromLocation,
+  fromPlant_code:fromPlant,
   fromLocation_ID:fromLocation,
   toPlant_code:toPlant,
   toLocation_ID:toLocation,
@@ -219,168 +334,168 @@ results.items=await tx.run(SELECT.from(TransferItems).where({transfer_ID:transfe
     // stock reservation
    
 
-    this.on("reserve", "StockBalances", async (req) => {
+    // this.on("reserve", "StockBalances", async (req) => {
 
-        const {
-            quantity,
-            note,
-            idempotencykey
-        } = req.data;
+    //     const {
+    //         quantity,
+    //         note,
+    //         idempotencykey
+    //     } = req.data;
 
-        // Validate reservation quantity
+    //     // Validate reservation quantity
 
-        requirePositive(req, quantity, "Reservation quantity");
-
-
-        //  Validate idempotency key
-
-        if (
-            !idempotencykey ||
-            !String(idempotencykey).trim()
-        ) {
-            fail(req, 400, "Idempotency key is required.");
-        }
+    //     requirePositive(req, quantity, "Reservation quantity");
 
 
-        //  Start request transaction
+    //     //  Validate idempotency key
 
-        const tx = cds.tx(req);
-
-
-        //  Check duplicate reservation request
-
-        const existing = await tx.run(
-            SELECT.one.from(Reservations).where({
-                idempotencykey
-            })
-        );
-
-        if (existing) {
-
-            // Same key cannot be reused for a different request
-
-            if (
-                number(existing.quantity) !== number(quantity)
-            ) {
-                fail(
-                    req,
-                    409,
-                    "Idempotency key was already used with a different quantity."
-                );
-            }
-
-            return existing;
-        }
+    //     if (
+    //         !idempotencykey ||
+    //         !String(idempotencykey).trim()
+    //     ) {
+    //         fail(req, 400, "Idempotency key is required.");
+    //     }
 
 
-        //  Get stock balance key from request
+    //     //  Start request transaction
 
-        const keyParams = req.params?.[0] || undefined;
-
-        const key = {
-            material_ID: keyParams.material_ID,
-            plant_code: keyParams.plant_code,
-            location_ID: keyParams.location_ID,
-            batch: keyParams.batch
-        };
+    //     const tx = cds.tx(req);
 
 
-        //  Validate stock balance key
+    //     //  Check duplicate reservation request
 
-        if (
-            !key.material_ID ||
-            !key.plant_code ||
-            !key.location_ID
-        ) {
-            fail(
-                req,
-                400,
-                "Material, plant and storage location are required."
-            );
-        }
+    //     const existing = await tx.run(
+    //         SELECT.one.from(Reservations).where({
+    //             idempotencykey
+    //         })
+    //     );
+
+    //     if (existing) {
+
+    //         // Same key cannot be reused for a different request
+
+    //         if (
+    //             number(existing.quantity) !== number(quantity)
+    //         ) {
+    //             fail(
+    //                 req,
+    //                 409,
+    //                 "Idempotency key was already used with a different quantity."
+    //             );
+    //         }
+
+    //         return existing;
+    //     }
 
 
-        //  Get and lock stock balance
+    //     //  Get stock balance key from request
 
-        const stock = await getStock(tx, key, req);
+    //     const keyParams = req.params?.[0] || undefined;
+
+    //     const key = {
+    //         material_ID: keyParams.material_ID,
+    //         plant_code: keyParams.plant_code,
+    //         location_ID: keyParams.location_ID,
+    //         batch: keyParams.batch
+    //     };
 
 
-        //  Check user plant authorization
+    //     //  Validate stock balance key
+
+    //     if (
+    //         !key.material_ID ||
+    //         !key.plant_code ||
+    //         !key.location_ID
+    //     ) {
+    //         fail(
+    //             req,
+    //             400,
+    //             "Material, plant and storage location are required."
+    //         );
+    //     }
+
+
+    //     //  Get and lock stock balance
+
+    //     const stock = await getStock(tx, key, req);
+
+
+    //     //  Check user plant authorization
 
     
 
 
-        //  Validate existing stock quantities
+    //     //  Validate existing stock quantities
 
-        validateStock(req, stock);
+    //     validateStock(req, stock);
             
-        //  Check available stock
-        const available = number(stock.unrestricted) - number(stock.reserved);
+    //     //  Check available stock
+    //     const available = number(stock.unrestricted) - number(stock.reserved);
 
-        if (number(quantity) > available) {
+    //     if (number(quantity) > available) {
 
-            fail(
-                req,
-                400,
-                `Insufficient stock. Available quantity: ${available}.`
-            );
+    //         fail(
+    //             req,
+    //             400,
+    //             `Insufficient stock. Available quantity: ${available}.`
+    //         );
 
-        }
-
-
-        //  Create reservation
-
-        const reservationID = cds.utils.uuid();
-
-        await tx.run(
-            INSERT.into(Reservations).entries({
-
-                ID: reservationID,
-
-                material_ID: stock.material_ID,
-                plant_code: stock.plant_code,
-                location_ID: stock.location_ID,
-                batch: stock.batch,
-
-                quantity: number(quantity),
-                consumedQty: 0,
-                releasedQty: 0,
-
-                status: "Active",
-
-                note: note || "",
-                idempotencykey: idempotencykey
-
-            })
-        );
+    //     }
 
 
-        //  Increase reserved stock quantity
+    //     //  Create reservation
 
-        await updateStock(
-            tx,
-            stock,
-            {
-                reserved:
-                    number(stock.reserved) + number(quantity)
-            },
-            req
-        );
+    //     const reservationID = cds.utils.uuid();
+
+    //     await tx.run(
+    //         INSERT.into(Reservations).entries({
+
+    //             ID: reservationID,
+
+    //             material_ID: stock.material_ID,
+    //             plant_code: stock.plant_code,
+    //             location_ID: stock.location_ID,
+    //             batch: stock.batch,
+
+    //             quantity: number(quantity),
+    //             consumedQty: 0,
+    //             releasedQty: 0,
+
+    //             status: "Active",
+
+    //             note: note || "",
+    //             idempotencykey: idempotencykey
+
+    //         })
+    //     );
 
 
-        //  Return created reservation
+    //     //  Increase reserved stock quantity
 
-        return tx.run(
-            SELECT.one.from(Reservations).where({
-                ID: reservationID
-            })
-        );
+    //     await updateStock(
+    //         tx,
+    //         stock,
+    //         {
+    //             reserved:
+    //                 number(stock.reserved) + number(quantity)
+    //         },
+    //         req
+    //     );
 
-    });
+
+    //     //  Return created reservation
+
+    //     return tx.run(
+    //         SELECT.one.from(Reservations).where({
+    //             ID: reservationID
+    //         })
+    //     );
+
+    // });
 
 
     // RELEASE RESERVATION
- 
+
 
     this.on("releaseReservation", "Reservations", async (req) => {
 
@@ -605,7 +720,7 @@ results.items=await tx.run(SELECT.from(TransferItems).where({transfer_ID:transfe
           location_ID: transfer.fromLocation_ID,
           batch: item.batch
         };
-
+console.log(key)
         const stock = await getStock(tx, key, req);
 
         const available =
@@ -784,5 +899,680 @@ results.items=await tx.run(SELECT.from(TransferItems).where({transfer_ID:transfe
     );
    
 }) 
+
+
+ this.on("dispacthTransfer", "TransferRequests", async (req) => {
+      const transferID = req.params?.[0]?.ID;
+
+      const {
+        items: lines,
+        idempotencykey
+      } = req.data;
+
+      const tx = cds.tx(req);
+
+      if (!idempotencykey) {
+        fail(req, 400, "Idempotency key is required.");
+      }
+
+      if (!Array.isArray(lines) || !lines.length) {
+        fail(req, 400, "At least one dispatch line is required.");
+      }
+
+      const transfer = await getTransfer(
+        tx,
+        transferID,
+        req
+      );
+
+      // assertPlantAccess(req, transfer.fromPlant_code);
+
+      if (!["Approved", "In_Transit"].includes(transfer.status)) {
+        fail(
+          req,
+          400,
+          "Transfer must be approved before dispatch."
+        );
+      }
+
+      const duplicate = await tx.run(
+        SELECT.one.from(StockMovements).where({
+          idempotencykey: `DISPATCH-${idempotencykey}`
+        })
+      );
+
+      if (duplicate) {
+        return tx.run(
+          SELECT.one.from(TransferRequests).where({
+            ID: transferID
+          })
+        );
+      }
+
+      for (const line of lines) {
+        requirePositive(
+          req,
+          line.quantity,
+          "Dispatch quantity"
+        );
+
+        const item = await tx.run(
+          SELECT.one.from(TransferItems)
+            .where({
+              ID: line.item,
+              transfer_ID: transferID
+            })
+            .forUpdate()
+        );
+
+        if (!item) {
+          fail(
+            req,
+            404,
+            `Transfer item ${line.item} was not found.`
+          );
+        }
+
+        const remaining =
+          number(item.requestedQty) -
+          number(item.dispatchedQty) -
+          number(item.cancelledQty);
+
+        if (number(line.quantity) > remaining) {
+          fail(
+            req,
+            400,
+            "Dispatch quantity exceeds the remaining requested quantity."
+          );
+        }
+
+        const reservationRows =
+          await getReservationForItem(tx, item.ID);
+
+        const reservation = reservationRows[0];
+
+        if (!reservation) {
+          fail(req, 400, "Active reservation was not found.");
+        }
+
+        const stock = await getStock(
+          tx,
+          {
+            material_ID: item.material_ID,
+            plant_code: transfer.fromPlant_code,
+            location_ID: transfer.fromLocation_ID,
+            batch:
+            item.batch
+          },
+          req
+        );
+
+        if (
+          number(stock.unrestricted) <
+          number(line.quantity)
+        ) {
+          fail(
+            req,
+            400,
+            "Insufficient unrestricted stock for dispatch."
+          );
+        }
+
+        if (
+          number(stock.reserved) <
+          number(line.quantity)
+        ) {
+          fail(
+            req,
+            409,
+            "Reserved stock is lower than the dispatch quantity."
+          );
+        }
+
+        // Reduce source stock and reservation
+
+        await updateStock(
+          tx,
+          stock,
+          {
+            unrestricted:
+              number(stock.unrestricted) -
+              number(line.quantity),
+
+            reserved:
+              number(stock.reserved) -
+              number(line.quantity)
+          },
+          req
+        );
+
+        const newDispatched =
+          number(item.dispatchedQty) +
+          number(line.quantity);
+
+        const remainingReservation =
+          number(reservation.quantity) -
+          number(reservation.consumedQty) -
+          number(reservation.releasedQty) -
+          number(line.quantity);
+
+        await tx.run(
+          UPDATE(Reservations)
+            .set({
+              consumedQty:
+                number(reservation.consumedQty) +
+                number(line.quantity),
+
+              status:
+                remainingReservation <= 0
+                  ? "Consumed"
+                  : "Active"
+            })
+            .where({ ID: reservation.ID })
+        );
+
+        await tx.run(
+          UPDATE(TransferItems)
+            .set({
+              dispatchedQty: newDispatched
+            })
+            .where({ ID: item.ID })
+        );
+
+        // Create stock movement ledger entry
+
+        await insertMovement(tx, req, {
+          movementType: "Transfer_Out",
+          material: item.material_ID,
+          plant: transfer.fromPlant_code,
+          location: transfer.fromLocation_ID,
+          batch: item.batch,
+          stockType: "Unrestricted",
+          quantity: line.quantity,
+          unit: item.unit_Code,
+          transfer: transferID,
+          transferItem: item.ID,
+          idempotencykey:
+            `DISPATCH-${idempotencykey}-${item.ID}`
+        });
+
+        // Close remaining undispatched quantity
+
+        if (line.closeRemaining) {
+          const outstanding =
+            remaining - number(line.quantity);
+
+          if (outstanding > 0) {
+            const activeReservations =
+              await getReservationForItem(tx, item.ID);
+
+            for (const active of activeReservations) {
+              const releaseQty =
+                number(active.quantity) -
+                number(active.consumedQty) -
+                number(active.releasedQty);
+
+              if (releaseQty <= 0) continue;
+
+              const latestStock = await getStock(
+                tx,
+                {
+                  material_ID: active.material_ID,
+                  plant_code: active.plant_code,
+                  location_ID: active.location_ID,
+                  batch: active.batch
+                },
+                req
+              );
+
+              await updateStock(
+                tx,
+                latestStock,
+                {
+                  reserved: Math.max(
+                    0,
+                    number(latestStock.reserved) -
+                    releaseQty
+                  )
+                },
+                req
+              );
+
+              await tx.run(
+                UPDATE(Reservations)
+                  .set({
+                    releasedQty:
+                      number(active.releasedQty) +
+                      releaseQty,
+
+                    status: "Released"
+                  })
+                  .where({ ID: active.ID })
+              );
+            }
+
+            await tx.run(
+              UPDATE(TransferItems)
+                .set({
+                  cancelledQty:
+                    number(item.cancelledQty) +
+                    outstanding
+                })
+                .where({ ID: item.ID })
+            );
+          }
+        }
+      }
+
+      await updateTransferStatusFromItems(
+        tx,
+        transferID
+      );
+
+      return tx.run(
+        SELECT.one.from(TransferRequests).where({
+          ID: transferID
+        })
+      );
+    });
+ // RECEIVE TRANSFER
+
+    this.on("receiveTransfer", "TransferRequests", async (req) => {
+      const transferID = req.params?.[0]?.ID;
+
+      const {
+        items: lines,
+        idempotencykey
+      } = req.data;
+
+      const tx = cds.tx(req);
+
+      if (!idempotencykey) {
+        fail(req, 400, "Idempotency key is required.");
+      }
+
+      if (!Array.isArray(lines) || !lines.length) {
+        fail(req, 400, "At least one receipt line is required.");
+      }
+
+      const transfer = await getTransfer(
+        tx,
+        transferID,
+        req
+      );
+
+      // assertPlantAccess(req, transfer.toPlant_code);
+
+      if (
+        !["In_Transit", "Partially_Received"].includes(
+          transfer.status
+        )
+      ) {
+        fail(
+          req,
+          400,
+          "Transfer has no dispatched quantity available for receipt."
+        );
+      }
+
+      const duplicate = await tx.run(
+        SELECT.one.from(StockMovements).where({
+          idempotencykey: `RECEIPT-${idempotencykey}`
+        })
+      );
+
+      if (duplicate) {
+        return tx.run(
+          SELECT.one.from(TransferRequests).where({
+            ID: transferID
+          })
+        );
+      }
+
+      for (const line of lines) {
+        const good = number(line.receivedQty);
+        const damaged = number(line.damagedQty);
+
+        if (
+          good < 0 ||
+          damaged < 0 ||
+          !Number.isFinite(good + damaged)
+        ) {
+          fail(
+            req,
+            400,
+            "Received and damaged quantities cannot be negative."
+          );
+        }
+
+        const item = await tx.run(
+          SELECT.one.from(TransferItems)
+            .where({
+              ID: line.item,
+              transfer_ID: transferID
+            })
+            .forUpdate()
+        );
+
+        if (!item) {
+          fail(
+            req,
+            404,
+            `Transfer item ${line.item} was not found.`
+          );
+        }
+
+        const alreadyResolved =
+          number(item.receivedQty) +
+          number(item.damagedQty) +
+          number(item.shortageQty);
+
+        const outstanding =
+          number(item.dispatchedQty) -
+          alreadyResolved;
+
+        const totalReported = good + damaged;
+
+        if (totalReported > outstanding) {
+          fail(
+            req,
+            400,
+            "Receipt quantity exceeds the dispatched quantity still in transit."
+          );
+        }
+
+        const shortage = outstanding - totalReported;
+
+        if (
+          shortage > 0 &&
+          line.closeShortage &&
+          !line.reasonCode
+        ) {
+          fail(
+            req,
+            400,
+            "A reason code is required when closing a shortage."
+          );
+        }
+
+        if (damaged > 0 && !line.reasonCode) {
+          fail(
+            req,
+            400,
+            "A reason code is required for damaged goods."
+          );
+        }
+
+        // Destination stock key
+
+        const destinationKey = {
+          material_ID: item.material_ID,
+          plant_code: transfer.toPlant_code,
+          location_ID: transfer.toLocation_ID,
+          batch: item.batch
+        };
+
+        let destinationStock = await tx.run(
+          SELECT.one.from(StockBalances)
+            .where(destinationKey)
+            .forUpdate()
+        );
+
+        // Create destination stock balance if it does not exist
+
+        if (!destinationStock) {
+          await tx.run(
+            INSERT.into(StockBalances).entries({
+              ...destinationKey,
+              unrestricted: 0,
+              qualityInspection: 0,
+              blocked: 0,
+              reserved: 0,
+              version: 0
+            })
+          );
+
+          destinationStock = await getStock(
+            tx,
+            destinationKey,
+            req
+          );
+        }
+
+        // Good stock -> unrestricted
+        // Damaged stock -> blocked
+
+        await updateStock(
+          tx,
+          destinationStock,
+          {
+            unrestricted:
+              number(destinationStock.unrestricted) + good,
+
+            blocked:
+              number(destinationStock.blocked) + damaged
+          },
+          req
+        );
+
+        // Good quantity movement
+
+        if (good > 0) {
+          await insertMovement(tx, req, {
+            movementType: "Transfer_In",
+            material: item.material_ID,
+            plant: transfer.toPlant_code,
+            location: transfer.toLocation_ID,
+            batch: item.batch,
+            stockType: "Unrestricted",
+            quantity: good,
+            unit: item.unit_Code,
+            transfer: transferID,
+            transferItem: item.ID,
+            idempotencykey:
+              `RECEIPT-${idempotencykey}-${item.ID}-GOOD`
+          });
+        }
+
+        // Damaged quantity movement
+
+        if (damaged > 0) {
+          await insertMovement(tx, req, {
+            movementType: "Transfer_In",
+            material: item.material_ID,
+            plant: transfer.toPlant_code,
+            location: transfer.toLocation_ID,
+            batch: item.batch,
+            stockType: "Blocked",
+            quantity: damaged,
+            unit: item.unit_Code,
+            reason: line.reasonCode,
+            reasonText: "Damaged during transfer receipt",
+            transfer: transferID,
+            transferItem: item.ID,
+            idempotencykey:
+              `RECEIPT-${idempotencykey}-${item.ID}-DAMAGED`
+          });
+        }
+
+        // Close shortage only when requested
+
+        const shortageToClose =
+          line.closeShortage && shortage > 0
+            ? shortage
+            : 0;
+
+        await tx.run(
+          UPDATE(TransferItems)
+            .set({
+              receivedQty:
+                number(item.receivedQty) + good,
+
+              damagedQty:
+                number(item.damagedQty) + damaged,
+
+              shortageQty:
+                number(item.shortageQty) + shortageToClose,
+
+              ...(shortageToClose > 0
+                ? {
+                    discrepancyReason_code: line.reasonCode
+                  }
+                : {})
+            })
+            .where({ ID: item.ID })
+        );
+
+        // Create discrepancy alert
+
+        if (damaged > 0 || shortageToClose > 0) {
+          await createAlert(tx, {
+            type: "TransferDiscrepancy",
+            severity: "High",
+            plant: transfer.toPlant_code,
+            material: item.material_ID,
+            transfer: transferID,
+
+            message:
+              `Transfer ${transfer.number}: damaged ${damaged}, ` +
+              `shortage ${shortageToClose}. Reason: ` +
+              `${line.reasonCode || "Not supplied"}.`
+          });
+        }
+      }
+
+      await updateTransferStatusFromItems(
+        tx,
+        transferID
+      );
+
+      return tx.run(
+        SELECT.one.from(TransferRequests).where({
+          ID: transferID
+        })
+      );
+    });
+
+     this.on("reverseMovement", "StockMovements", async (req) => {
+      const movementID = req.params?.[0]?.ID;
+
+      const {
+        reasonCode,
+        reasonText,
+        idempotencykey
+      } = req.data;
+
+      const tx = cds.tx(req);
+
+      if (!reasonCode) {
+        fail(req, 400, "A reversal reason is required.");
+      }
+
+      if (!idempotencykey) {
+        fail(req, 400, "Idempotency key is required.");
+      }
+
+      const duplicate = await tx.run(
+        SELECT.one.from(StockMovements).where({
+          idempotencykey
+        })
+      );
+
+      if (duplicate) return duplicate;
+
+      const original = await tx.run(
+        SELECT.one.from(StockMovements)
+          .where({ ID: movementID })
+          .forUpdate()
+      );
+
+      if (!original) {
+        fail(req, 404, "Original movement was not found.");
+      }
+
+      const alreadyReversed = await tx.run(
+        SELECT.one.from(StockMovements).where({
+          reversalOf_ID: movementID
+        })
+      );
+
+      if (alreadyReversed) {
+        fail(req, 409, "This movement has already been reversed.");
+      }
+
+      const key = {
+        material_ID: original.material_ID,
+        plant_code: original.plant_code,
+        location_ID: original.location_ID,
+        batch: original.batch
+      };
+
+      const stock = await getStock(tx, key, req);
+
+      const qty = number(original.quantity);
+
+      let changes = {};
+
+      const stockField =
+        original.stockType === "Quality"
+          ? "qualityInspection"
+          : original.stockType === "Blocked"
+            ? "blocked"
+            : "unrestricted";
+
+      if (
+        original.movementType === "Receipt" ||
+        original.movementType === "Transfer_In"
+      ) {
+        if (number(stock[stockField]) < qty) {
+          fail(
+            req,
+            400,
+            "Cannot reverse movement: insufficient current stock."
+          );
+        }
+
+        changes[stockField] =
+          number(stock[stockField]) - qty;
+
+      } else if (
+        original.movementType === "Issue" ||
+        original.movementType === "Transfer_Out"
+      ) {
+        changes[stockField] =
+          number(stock[stockField]) + qty;
+
+      } else {
+        fail(
+          req,
+          400,
+          "Automatic reversal is supported for Receipt, Issue and transfer movements only."
+        );
+      }
+
+      await updateStock(tx, stock, changes, req);
+
+      await insertMovement(tx, req, {
+        movementType: "Reversal",
+        material: original.material_ID,
+        plant: original.plant_code,
+        location: original.location_ID,
+        batch: original.batch,
+        stockType: original.stockType,
+        quantity: qty,
+        unit: original.unit_Code,
+        reason: reasonCode,
+        reasonText,
+        reversalOf: movementID,
+        idempotencykey
+      });
+
+      return tx.run(
+        SELECT.one.from(StockMovements).where({
+          idempotencykey
+        })
+      );
+    });
+
 
 })

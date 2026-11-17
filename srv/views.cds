@@ -24,11 +24,11 @@ sum(unrestricted -reserved) as available :Decimal(13,3),
 // re-order candidates :availabel stock below the re-order level
 
 
-// entity ReorderCandidates as select from db.StockBalances as b inner join db.ReorderLevels as r on r.material.ID=b.material.ID and r.plant.code=b.plant.code
-// {
-//     key b.material.ID as material :String(18),
-//     key b.plant.code as plant:String(4),
-//     r.level as reorderLevel:Decimal(13,3),
-//     sum(b.unrestricted -b.reserved) as availabel :Decimal(13,3)
-// }  group by b.material.ID, b.plant.code , r.level 
-// having sum(b.unrestricted -b.reserved)<r.level;
+entity ReorderCandidates as select from db.StockBalances as b inner join db.ReorderLevels as r on r.material.ID=b.material.ID and r.plant.code=b.plant.code
+{
+    key b.material.ID as material :String(18),
+    key b.plant.code as plant:String(4),
+    r.level as reorderLevel:Decimal(13,3),
+    sum(b.unrestricted -b.reserved) as availabel :Decimal(13,3)
+}  group by b.material.ID, b.plant.code , r.level 
+having sum(b.unrestricted -b.reserved)<r.level;

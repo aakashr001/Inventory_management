@@ -27,7 +27,7 @@ type ReceiptLine {
 
 
 service InventoryService{
-    // Master data
+  
     entity Materials as projection on db.Materials;
     entity Plants as projection on db.Plants excluding {locations};
     entity StorageLocations as projection on db.StorageLocations excluding{bins};
@@ -45,6 +45,7 @@ service InventoryService{
 
     }
   @readonly entity StockSummary as projection on views.StockSummary;
+  @readonly entity  ReorderCandidates as projection on views.ReorderCandidates;
   // 
 @readonly 
 entity StockMovements as projection on db.StockMovements actions{
