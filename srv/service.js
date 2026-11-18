@@ -25,6 +25,92 @@ module.exports = cds.service.impl(async function() {
 
     // COMMON HELPER FUNCTIONS
     
+// Stale-transfer thresholds in days
+const STALE_DAYS = {
+    Requested: 3,
+    Approved: 2,
+    In_Transit: 5,
+    Partially_Received: 3
+};
+
+// Publish an event to SAP Alert Notification Service
+async function publishAlertEvent(alert) {
+
+    const baseUrl = process.env.ANS_URL;
+    const clientId = process.env.ANS_CLIENT_ID;
+    const clientSecret = process.env.ANS_CLIENT_SECRET;
+
+    // Allow local testing before ANS is configured
+    if (!baseUrl || !clientId || !clientSecret) {
+        console.warn("Alert Notification credentials are not configured.");
+        return;
+    }
+
+    const auth = Buffer.from(
+        `${clientId}:${clientSecret}`
+    ).toString("base64");
+
+ const payload = {
+        eventType: alert.type,
+        severity: alert.severity === "Error" ? "ERROR" : "WARNING",
+        category: "ALERT",
+        subject: alert.type === "LOW_STOCK"
+            ? "Inventory Low Stock Alert"
+            : "Inventory Transfer Exception",
+        body: alert.message,
+        eventTimestamp: Math.floor(Date.now() / 1000),
+
+        resource: {
+            resourceName: "Inventory Management",
+            resourceType: "application"
+        },
+
+        tags: {
+            plant: alert.plant_code || "",
+            material: alert.material_ID || "",
+            transfer: alert.transfer_ID || ""
+        }
+    };
+
+    const response = await fetch(
+        `${baseUrl.replace(/\/$/, "")}/cf/producer/v1/resource-events`,
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Basic ${auth}`
+            },
+            body: JSON.stringify(payload)
+        }
+    );
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+            `Alert Notification failed: ${response.status} ${errorText}`
+        );
+    }
+}
+
+
+// Check whether an unacknowledged alert already exists
+async function alertAlreadyExists(tx, criteria) {
+
+    const existing = await tx.run(
+        SELECT.one.from(Alerts).where({
+            ...criteria,
+            acknowledged: false
+        })
+    );
+
+    return !!existing;
+}
+
+
+
+
+
+
  const fail = (req, status, message) =>
         req.reject(status, message);
     const setTransferStatus = async (tx, transferID, status) => {

@@ -3,14 +3,23 @@
   "version": "1.0.0",
   "type": "commonjs",
   "dependencies": {
-    "@cap-js/hana": "^3.2.0",
+    "@cap-js/hana": "^3",
     "@sap/cds": "^10"
   },
   "devDependencies": {
-    "@cap-js/sqlite": "^3"
+    "@cap-js/sqlite": "^3",
+    "@sap/cds-dk": "^10"
   },
   "scripts": {
     "start": "cds-serve"
+  },
+
+  "cds":{
+    "requires":{
+      "auth":{
+        "kind":"mocked"
+      }
+    }
   },
   "private": true
 }

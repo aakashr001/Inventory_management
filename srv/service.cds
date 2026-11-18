@@ -10,7 +10,11 @@ type TransferItemInput{
   requestedQty:db.Qty;
 
 }
-
+type InventoryCheckResult {
+    lowStockCount      : Integer;
+    staleTransferCount : Integer;
+    alertsCreated      : Integer;
+}
 type DispatchLine {
   item           : UUID;      
   quantity       : db.Qty;    
@@ -47,6 +51,8 @@ service InventoryService{
   @readonly entity StockSummary as projection on views.StockSummary;
   @readonly entity  ReorderCandidates as projection on views.ReorderCandidates;
   // 
+      action runInventoryChecks() returns InventoryCheckResult;
+
 @readonly 
 entity StockMovements as projection on db.StockMovements actions{
     action reverseMovement(reasonCode:String(10),reasonText:String(255),idempotencykey:String(80)) returns StockMovements;
